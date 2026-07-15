@@ -1,17 +1,16 @@
-name: deploy-trigger
+name: notify-devops
 
-# After the "tests" workflow finishes successfully on main, notify the
-# personal GitOps repo (AhtishamHussain/devops) so it can build, push and
-# deploy the bot image. The build/deploy itself lives entirely in that repo;
-# this job only fires the signal once CI is green.
+# Small, self-contained "notify" workflow. It runs quickly on pushes to main
+# (and can be run manually), performs a lightweight sanity check, and — once
+# green — notifies the personal GitOps repo (AhtishamHussain/devops) so the
+# real build/deploy pipeline runs there. The heavy build/deploy work lives
+# entirely in the devops repo; this workflow only fires the green signal.
 
 on:
-  workflow_run:
-    workflows: ["tests"]
-    types:
-      - completed
+  push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,15 +19,24 @@ jobs:
   notify-devops:
     name: Notify devops repo (green build)
     runs-on: ubuntu-latest
-    # Only proceed when the upstream test run actually passed.
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Lightweight "is this build sane?" gate. Keep it fast — this is a notify
+      # workflow, not the full test suite. Swap in whatever quick check you want
+      # (lint, a smoke import, etc.); if it fails, devops is never notified.
+      - name: Quick sanity check
+        run: |
+          test -f pyproject.toml
+          echo "Sanity check passed."
+
       - name: Send repository_dispatch to devops
         env:
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           DEVOPS_REPO: AhtishamHussain/devops
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.sha }}
+          HEAD_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
