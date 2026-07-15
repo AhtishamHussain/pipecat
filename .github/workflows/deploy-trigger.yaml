@@ -31,12 +31,16 @@ jobs:
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${DEVOPS_REPO}/dispatches" \
-            -d "$(cat <<EOF
+
+          # Fail early with an actionable message if the token secret is unset.
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::error::Missing 'DISPATCH_TOKEN' secret in this repository." \
+                 "Add it under Settings > Secrets and variables > Actions" \
+                 "(a classic PAT with 'repo' scope on ${DEVOPS_REPO})."
+            exit 1
+          fi
+
+          payload="$(cat <<EOF
           {
             "event_type": "pipecat-green",
             "client_payload": {
@@ -47,4 +51,25 @@ jobs:
           }
           EOF
           )"
-          echo "Dispatched pipecat-green to ${DEVOPS_REPO} for ${HEAD_SHA}"
+
+          # Capture the HTTP status so auth/permission errors are obvious.
+          status="$(curl --silent --show-error --output /tmp/dispatch_resp.txt \
+            --write-out '%{http_code}' -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${DEVOPS_REPO}/dispatches" \
+            -d "${payload}")"
+
+          echo "GitHub API responded with HTTP ${status}."
+          if [ "${status}" != "204" ]; then
+            echo "::error::Dispatch to ${DEVOPS_REPO} failed (HTTP ${status})."
+            echo "Response body:"
+            cat /tmp/dispatch_resp.txt || true
+            echo
+            echo "HTTP 401 => token invalid/expired. HTTP 403/404 => token lacks" \
+                 "access to ${DEVOPS_REPO} (needs 'repo' scope / repo access)."
+            exit 1
+          fi
+
+          echo "Dispatched 'pipecat-green' to ${DEVOPS_REPO} for ${HEAD_SHA}."
