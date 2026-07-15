@@ -1,0 +1,50 @@
+name: deploy-trigger
+
+# After the "tests" workflow finishes successfully on main, notify the
+# personal GitOps repo (AhtishamHussain/devops) so it can build, push and
+# deploy the bot image. The build/deploy itself lives entirely in that repo;
+# this job only fires the signal once CI is green.
+
+on:
+  workflow_run:
+    workflows: ["tests"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  notify-devops:
+    name: Notify devops repo (green build)
+    runs-on: ubuntu-latest
+    # Only proceed when the upstream test run actually passed.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Send repository_dispatch to devops
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          DEVOPS_REPO: AhtishamHussain/devops
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${DEVOPS_REPO}/dispatches" \
+            -d "$(cat <<EOF
+          {
+            "event_type": "pipecat-green",
+            "client_payload": {
+              "sha": "${HEAD_SHA}",
+              "ref": "${HEAD_BRANCH}",
+              "source_repo": "${GITHUB_REPOSITORY}"
+            }
+          }
+          EOF
+          )"
+          echo "Dispatched pipecat-green to ${DEVOPS_REPO} for ${HEAD_SHA}"
