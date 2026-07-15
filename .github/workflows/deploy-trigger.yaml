@@ -1,10 +1,8 @@
 name: notify-devops
 
-# Small, self-contained "notify" workflow. It runs quickly on pushes to main
-# (and can be run manually), performs a lightweight sanity check, and — once
-# green — notifies the personal GitOps repo (AhtishamHussain/devops) so the
-# real build/deploy pipeline runs there. The heavy build/deploy work lives
-# entirely in the devops repo; this workflow only fires the green signal.
+# Minimal notify workflow: on push to main (or manual run) it signals the
+# personal GitOps repo (AhtishamHussain/devops) to run the real build/deploy.
+# All build/deploy work lives in the devops repo; this only fires the signal.
 
 on:
   push:
@@ -17,67 +15,27 @@ permissions:
 
 jobs:
   notify-devops:
-    name: Notify devops repo (green build)
+    name: Notify devops repo
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Lightweight "is this build sane?" gate. Keep it fast — this is a notify
-      # workflow, not the full test suite. Swap in whatever quick check you want
-      # (lint, a smoke import, etc.); if it fails, devops is never notified.
-      - name: Quick sanity check
-        run: |
-          test -f pyproject.toml
-          echo "Sanity check passed."
-
       - name: Send repository_dispatch to devops
         env:
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           DEVOPS_REPO: AhtishamHussain/devops
-          HEAD_SHA: ${{ github.sha }}
-          HEAD_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
-          # Fail early with an actionable message if the token secret is unset.
-          if [ -z "${DISPATCH_TOKEN:-}" ]; then
-            echo "::error::Missing 'DISPATCH_TOKEN' secret in this repository." \
-                 "Add it under Settings > Secrets and variables > Actions" \
-                 "(a classic PAT with 'repo' scope on ${DEVOPS_REPO})."
-            exit 1
-          fi
-
-          payload="$(cat <<EOF
-          {
-            "event_type": "pipecat-green",
-            "client_payload": {
-              "sha": "${HEAD_SHA}",
-              "ref": "${HEAD_BRANCH}",
-              "source_repo": "${GITHUB_REPOSITORY}"
-            }
-          }
-          EOF
-          )"
-
-          # Capture the HTTP status so auth/permission errors are obvious.
-          status="$(curl --silent --show-error --output /tmp/dispatch_resp.txt \
+          status="$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${DEVOPS_REPO}/dispatches" \
-            -d "${payload}")"
+            -d '{"event_type":"pipecat-green","client_payload":{"sha":"${{ github.sha }}"}}')"
 
           echo "GitHub API responded with HTTP ${status}."
           if [ "${status}" != "204" ]; then
-            echo "::error::Dispatch to ${DEVOPS_REPO} failed (HTTP ${status})."
-            echo "Response body:"
-            cat /tmp/dispatch_resp.txt || true
-            echo
-            echo "HTTP 401 => token invalid/expired. HTTP 403/404 => token lacks" \
-                 "access to ${DEVOPS_REPO} (needs 'repo' scope / repo access)."
+            echo "::error::Dispatch to ${DEVOPS_REPO} failed (HTTP ${status}). " \
+                 "Check the DISPATCH_TOKEN secret (classic PAT, 'repo' scope)."
             exit 1
           fi
-
-          echo "Dispatched 'pipecat-green' to ${DEVOPS_REPO} for ${HEAD_SHA}."
+          echo "Notified ${DEVOPS_REPO}."
