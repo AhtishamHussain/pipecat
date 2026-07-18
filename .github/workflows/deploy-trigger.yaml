@@ -1,8 +1,8 @@
 name: notify-devops
 
-# Minimal notify workflow: on push to main (or manual run) it signals the
-# personal GitOps repo (AhtishamHussain/devops) to run the real build/deploy.
-# All build/deploy work lives in the devops repo; this only fires the signal.
+# On push to main (or manual run), signal AhtishamHussain/devops to build the
+# image (Harbor), then deploy to the private Kubernetes cluster via
+# Terraform / Ansible / ArgoCD. All deploy work lives in the devops repo.
 
 on:
   push:
@@ -31,30 +31,50 @@ jobs:
             exit 1
           fi
 
+          short_sha="$(echo '${{ github.sha }}' | cut -c1-7)"
+          payload="$(jq -nc \
+            --arg event_type "pipecat-deploy" \
+            --arg sha "${{ github.sha }}" \
+            --arg short_sha "${short_sha}" \
+            --arg ref "${{ github.ref_name }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg actor "${{ github.actor }}" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                sha: $sha,
+                short_sha: $short_sha,
+                ref: $ref,
+                repo: $repo,
+                actor: $actor,
+                image_tag: $short_sha
+              }
+            }')"
+
           status="$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${PROJECT_REPO_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${DEVOPS_REPO}/dispatches" \
-            -d '{"event_type":"pipecat-green","client_payload":{"sha":"${{ github.sha }}"}}')"
+            -d "${payload}")"
 
           echo "GitHub API responded with HTTP ${status}."
           case "${status}" in
             204)
-              echo "Notified ${DEVOPS_REPO}."
+              echo "Notified ${DEVOPS_REPO} (pipecat-deploy, sha=${{ github.sha }})."
               ;;
             401)
               echo "::error::PROJECT_REPO_TOKEN was rejected (HTTP 401, bad credentials)." \
-                   "The token is expired or invalid. Generate a new PAT with access to" \
-                   "${DEVOPS_REPO} and update the PROJECT_REPO_TOKEN secret."
+                   "The token is expired or invalid. Generate a new classic PAT with" \
+                   "'repo' + 'workflow' scopes and access to ${DEVOPS_REPO}, then update" \
+                   "the PROJECT_REPO_TOKEN secret."
               exit 1
               ;;
             404)
               echo "::error::${DEVOPS_REPO} not found (HTTP 404). Either the repo does not" \
-                   "exist or PROJECT_REPO_TOKEN has no access to it. For a fine-grained PAT," \
-                   "grant it that repo with 'Contents: Read and write'; for a classic PAT," \
-                   "use the 'repo' scope."
+                   "exist or PROJECT_REPO_TOKEN has no access to it. Classic PAT needs" \
+                   "the 'repo' scope."
               exit 1
               ;;
             *)
